@@ -1,0 +1,12 @@
+# General
+.DS_Store
+node_modules/
+__pycache__/
+venv/
+env/
+.env
+.env.local
+
+# Next.js
+frontend/.next/
+frontend/out/
