@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
 
-// Dynamically load the map to prevent Server-Side Rendering crashes
 const LiveMap = dynamic(() => import('@/components/LiveMap'), { 
   ssr: false,
   loading: () => <div className="h-[250px] bg-gray-200 animate-pulse rounded-xl flex items-center justify-center text-gray-500 font-mono text-sm border-2 border-gray-300">Initializing Satellite Uplink...</div>
@@ -11,6 +10,7 @@ const LiveMap = dynamic(() => import('@/components/LiveMap'), {
 
 export default function PublicPortal() {
   const [locationStatus, setLocationStatus] = useState("Click to capture GPS");
+  const [reportText, setReportText] = useState(""); // <-- New State for the textbox
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
@@ -45,8 +45,9 @@ export default function PublicPortal() {
     const lat = latMatch ? latMatch[1] : "Unknown";
     const lng = lngMatch ? lngMatch[1] : "Unknown";
 
+    // Pass the actual typed text to the backend
     const payload = {
-      message: "Silent report: Trapped on the roof. 3 people here, water is rising fast.",
+      message: reportText || "Silent report: Immediate assistance required.",
       latitude: lat,
       longitude: lng,
       contact: "Anonymous"
@@ -99,14 +100,25 @@ export default function PublicPortal() {
         {/* 2. SILENT WEB REPORT */}
         <div className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200">
           <h2 className="font-bold text-gray-800 text-lg mb-2">Silent Web Report</h2>
-          <p className="text-sm text-gray-600 mb-4">If you cannot speak, upload a photo of your surroundings.</p>
+          <p className="text-sm text-gray-600 mb-4">If you cannot speak, send a discrete SOS.</p>
           
           {submitted ? (
             <div className="bg-green-50 border border-green-200 text-green-700 p-4 rounded-xl text-center font-bold">
-              ✅ Report Received. Rescue assigned.
+              ✅ Report Received. NDRF Rescue assigned.
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Describe Emergency</label>
+                <textarea 
+                  value={reportText}
+                  onChange={(e) => setReportText(e.target.value)}
+                  placeholder="E.g., 3 people trapped on the roof, water rising fast..."
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  rows={3}
+                  required
+                />
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Your Exact Location</label>
                 <button 
