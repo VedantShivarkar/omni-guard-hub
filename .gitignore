@@ -4,8 +4,8 @@ node_modules/
 __pycache__/
 venv/
 env/
-.env
-.env.local
+.env         
+.DS_Store
 
 # Next.js
 frontend/.next/

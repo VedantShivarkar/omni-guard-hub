@@ -1,8 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  reactCompiler: true,
+  // Disabled React Compiler to prevent Leaflet memory leaks
 };
 
 export default nextConfig;

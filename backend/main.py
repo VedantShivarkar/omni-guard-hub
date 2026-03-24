@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import email_alerts
+from routers import twilio_webhooks
 # We will uncomment the twilio router in the next step
 # from routers import twilio_webhooks
 
@@ -21,7 +22,7 @@ app.add_middleware(
 
 # Include the routing modules
 app.include_router(email_alerts.router, prefix="/api/v1/alerts", tags=["Notifications"])
-# app.include_router(twilio_webhooks.router, prefix="/api/v1/twilio", tags=["Comms"])
+app.include_router(twilio_webhooks.router, prefix="/api/v1/twilio", tags=["Comms"])
 
 @app.get("/")
 async def health_check():
