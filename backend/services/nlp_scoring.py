@@ -10,7 +10,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 def fetch_live_weather(lat: str, lon: str) -> dict:
     api_key = os.getenv("OPENWEATHER_API_KEY")
-    # Clean coordinates in case they contain "Lat:" strings
     clean_lat = str(lat).replace("Lat:", "").strip()
     clean_lon = str(lon).replace("Lng:", "").strip()
     
@@ -89,15 +88,20 @@ You are OmniGuard, a strict forensic AI Logistics Officer for the NDRF.
 Analyze this Distress Signal against the Live Weather and Social Data.
 
 Distress Signal: "{actual_text}"
+City/Region Context: {weather_data['city']}
 Live Weather API: {weather_data}
 Social Media API: {social_data}
 
 CRITICAL RULE 1: FORENSIC WEATHER VERIFICATION
 If the user claims a flood, heavy rain, or storm, BUT the Live Weather API shows 'clear', 'haze', 'clouds', or low wind, THIS IS A FALSE ALARM.
-If it is a false alarm: set "truth_verification_score" to "0%", "severity" to "INFO", "urgency_score" to 0, and explicitly write "FALSE CLAIM DETECTED: Weather API confirms clear/mild conditions, contradicting the emergency claim." in "osint_context".
 
-CRITICAL RULE 2: NON-NDRF INCIDENTS
-If the event is gunfire, robbery, or gangwar, set "is_natural_disaster" to false, "severity" to "INFO", "truth_verification_score" to "0%", and state "Police incident, routing away from NDRF" in osint_context.
+CRITICAL RULE 2: NON-NDRF INCIDENTS & LIFE-THREATENING ESCALATION
+If the event is NOT a natural disaster (e.g., gunfire, robbery, power cut, medical emergency):
+1. Set "is_natural_disaster" to false.
+2. Identify the correct local department (e.g., Police 100, Electricity 1912, Ambulance 108) and put it in "local_authority_contact".
+3. ESCALATION CHECK: Is this an immediate threat to life (e.g., active shooter, bleeding out, severe violence)?
+   - If YES: Set "severity" to "CRITICAL", "urgency_score" to 9 or 10, and a high "truth_verification_score" based on context. Add "LIFE_THREATENING" to extracted_flags.
+   - If NO (e.g., normal power outage, simple theft): Set "severity" to "INFO", "urgency_score" to 0-3, and "truth_verification_score" to "0%".
 
 LOGISTICS OFFICER INSTRUCTION:
 Generate operational deployment guidance based on severity, weather, terrain, and estimated_people.
@@ -105,7 +109,7 @@ Generate operational deployment guidance based on severity, weather, terrain, an
 Output ONLY valid JSON:
 {{
     "is_natural_disaster": <boolean>,
-    "event_type": "<e.g., Flood, Fake Claim, Gunfire>",
+    "event_type": "<e.g., Flood, Active Shooter, Power Outage>",
     "severity": "CRITICAL", "WARNING", or "INFO",
     "urgency_score": <int 0-10>,
     "truth_verification_score": "<percentage string, e.g. '0%' or '95%'>",
@@ -113,6 +117,7 @@ Output ONLY valid JSON:
     "estimated_people": <int>,
     "osint_context": "<Strict proof of weather match or mismatch>",
     "transcribed_text": "{actual_text}",
+    "local_authority_contact": "<Provide correct emergency number/department if non-NDRF, else 'N/A'>",
     "logistics": {{
         "equipment": ["<list of deployment equipment>"],
         "personnel": "<team composition>",
@@ -136,9 +141,10 @@ Output ONLY valid JSON:
         result = json.loads(res_data['choices'][0]['message']['content'])
         
         # Hard override for safety
-        if not result.get("is_natural_disaster", True) or "FALSE CLAIM" in result.get("osint_context", ""):
-            result["truth_verification_score"] = "0%"
-            result["severity"] = "INFO"
+        if not result.get("is_natural_disaster", True) and result.get("severity") != "CRITICAL":
+            if "FALSE CLAIM" in result.get("osint_context", ""):
+                result["truth_verification_score"] = "0%"
+                result["severity"] = "INFO"
             
         return result
         
@@ -149,6 +155,7 @@ Output ONLY valid JSON:
             "severity": "INFO", "urgency_score": 0, "truth_verification_score": "0%",
             "extracted_flags": ["error"], "estimated_people": 0, 
             "osint_context": "API Error. Manual verification required.", "transcribed_text": actual_text,
+            "local_authority_contact": "N/A",
             "logistics": {"equipment": ["Standard Requisition"], "personnel": "Standby", "burn_rate_warning": "N/A"}
         }
 
@@ -166,8 +173,6 @@ def fetch_global_news(query: str) -> str:
         return "News API timeout."
 
 def macro_osint_scan(region_name: str, lat: str, lon: str) -> dict:
-    print(f"[🌍] Initiating Global Macro-Scan for: {region_name}")
-    
     weather_data = fetch_live_weather(lat, lon)
     news_data = fetch_global_news(region_name)
 
@@ -179,12 +184,7 @@ def macro_osint_scan(region_name: str, lat: str, lon: str) -> dict:
 
     CRITICAL INSTRUCTION FOR COMPREHENSIVE REPORTING:
     Provide a detailed, multi-incident report for the entire region based on News data AND your internal knowledge of current events.
-    If the region is India/Nepal, explicitly include:
-    1. Nepal-India border earthquake today.
-    2. Jammu & Kashmir landslides (Sinthan Top / Kishtwar).
-    3. Odisha tornadoes and severe storms (Mayurbhanj).
-    4. Sikkim heavy rainfall.
-
+    
     CASUALTY & GEOLOCATION RULE:
     1. You MUST synthesize realistic integer casualty estimates if exact figures are missing. 
     2. You MUST provide approximate 'approx_lat' and 'approx_lng' coordinates for WHERE this incident is happening so we can plot it on a GIS map.
@@ -197,7 +197,7 @@ def macro_osint_scan(region_name: str, lat: str, lon: str) -> dict:
         "executive_summary": "A harsh 2-sentence summary of the multiple crises.",
         "active_incidents": [
             {{
-                "location": "<Exact area, e.g., Kishtwar, J&K>",
+                "location": "<Exact area>",
                 "type": "<e.g., Landslide>",
                 "approx_lat": <float coordinate>,
                 "approx_lng": <float coordinate>,
@@ -225,7 +225,6 @@ def macro_osint_scan(region_name: str, lat: str, lon: str) -> dict:
         return json.loads(res_data['choices'][0]['message']['content'])
         
     except Exception as e:
-        print(f"Macro Scan Error: {e}")
         return {
             "threat_level": "UNKNOWN", "primary_hazard": "System Degradation", "confidence_score": "0%",
             "executive_summary": "OSINT APIs failed to return data.", "active_incidents": []

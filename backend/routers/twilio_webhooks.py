@@ -13,9 +13,7 @@ import uuid
 load_dotenv()
 
 router = APIRouter()
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
 @router.post("/incoming-whatsapp")
 async def handle_whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -32,40 +30,27 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
     longitude = parsed_data.get('Longitude', ['None'])[0]
 
     hashed_id = f"Victim-***{sender_number[-4:]}" if len(sender_number) >= 4 else "Victim-Unknown"
-
     has_location = latitude != 'None'
     has_audio = num_media > 0 and 'audio' in media_type
-    
-    # CRITICAL FIX: Ignore hidden Google Maps links sent by WhatsApp when dropping a pin
     has_meaningful_text = len(incoming_msg) > 3 and "google.com/maps" not in incoming_msg and "maps.apple.com" not in incoming_msg
-
     provided_description = has_audio or has_meaningful_text
 
     try:
-        # 1. FETCH STATE: ONLY look for active, INCOMPLETE reports
         existing = supabase.table("distress_signals").select("*").eq("hashed_id", hashed_id).eq("status", "INCOMPLETE").order("created_at", desc=True).limit(1).execute()
+        merged_text, merged_lat, merged_lon = incoming_msg, latitude, longitude
         
-        merged_text = incoming_msg
-        merged_lat = latitude
-        merged_lon = longitude
-        
-        # Immediately transcribe audio if present
         if has_audio and media_url:
-            transcribed = transcribe_audio_with_groq(media_url)
-            merged_text = f"🎙️ {transcribed}"
+            merged_text = f"🎙️ {transcribe_audio_with_groq(media_url)}"
             provided_description = True
 
-        # Merge with existing INCOMPLETE DB record if one exists
         if existing.data:
             record = existing.data[0]
-            
             if provided_description and not has_location:
                 if record['location_str'] and record['location_str'] != "Location Pending":
                     parts = record['location_str'].replace("Lat:", "").replace("Lng:", "").split(",")
                     if len(parts) == 2:
                         merged_lat, merged_lon = parts[0].strip(), parts[1].strip()
                         has_location = True
-                        
             if has_location and not provided_description:
                 if record['raw_message'] and record['raw_message'] != "Awaiting Voice Note...":
                     merged_text = record['raw_message']
@@ -73,77 +58,74 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
 
         new_location_str = f"{merged_lat}, {merged_lon}" if has_location else "Location Pending"
 
-        # 2. DECIDE ACTION BASED ON COMPLETENESS
         if provided_description and not has_location:
-            reply_text = "⚠️ Audio Received & Transcribed. We MUST have your exact coordinates. Please tap the '+' icon and send your 'Live Location' immediately."
+            reply_text = "⚠️ Audio Received & Transcribed. We MUST have your exact coordinates. Send 'Live Location' immediately."
             db_payload = {
-                "raw_message": merged_text,
-                "location_str": "Location Pending",
-                "severity": "INFO",
-                "urgency_score": 0,
-                "truth_verification_score": "Pending",
-                "osint_context": "Awaiting Location Data...",
-                "event_type": "Pending",
-                "status": "INCOMPLETE" 
+                "raw_message": merged_text, "location_str": "Location Pending", "severity": "INFO",
+                "urgency_score": 0, "truth_verification_score": "Pending", "osint_context": "Awaiting Location Data...",
+                "event_type": "Pending", "status": "INCOMPLETE" 
             }
 
         elif has_location and not provided_description:
-            reply_text = f"📍 Coordinates Locked: {merged_lat}, {merged_lon}. Please send a voice note describing the emergency so we can verify the threat."
+            reply_text = f"📍 Coordinates Locked: {merged_lat}, {merged_lon}. Please send a voice note describing the emergency."
             db_payload = {
-                "raw_message": "Awaiting Voice Note...",
-                "location_str": new_location_str,
-                "severity": "INFO",
-                "urgency_score": 0,
-                "truth_verification_score": "Pending",
-                "osint_context": "Awaiting Audio Data...",
-                "event_type": "Pending",
-                "status": "INCOMPLETE" 
+                "raw_message": "Awaiting Voice Note...", "location_str": new_location_str, "severity": "INFO",
+                "urgency_score": 0, "truth_verification_score": "Pending", "osint_context": "Awaiting Audio Data...",
+                "event_type": "Pending", "status": "INCOMPLETE" 
             }
 
         elif provided_description and has_location:
-            # WE HAVE BOTH! Trigger the heavy AI Triage
-            ai_analysis = analyze_distress_signal(merged_text, merged_lat, merged_lon, media_url=None)
-            
+            ai_analysis = analyze_distress_signal(merged_text, merged_lat, merged_lon)
             truth_score = ai_analysis.get('truth_verification_score', '0%')
             is_disaster = ai_analysis.get('is_natural_disaster', True)
+            local_contact = ai_analysis.get('local_authority_contact', 'N/A')
+            severity = ai_analysis.get('severity', 'INFO')
+            
+            is_life_threatening_non_ndrf = (not is_disaster) and (severity == 'CRITICAL')
 
-            # Formulate final WhatsApp reply
-            if not is_disaster or truth_score == "0%":
-                reply_text = f"⚠️ Alert rejected by OmniGuard OSINT. Truth Score: {truth_score}. Coordinates: {merged_lat}, {merged_lon}. Please contact local authorities."
+            # --- THE NEW REPLY LOGIC ---
+            if not is_disaster and not is_life_threatening_non_ndrf:
+                reply_text = f"⚠️ OMNIGUARD: This is a non-NDRF incident. Please contact local authorities immediately: {local_contact}"
+            elif is_life_threatening_non_ndrf:
+                reply_text = f"🚨 CRITICAL ALERT: Life-threatening emergency verified. Alert routed to {local_contact}. Help is being dispatched to {merged_lat}, {merged_lon}."
+            elif truth_score == "0%":
+                reply_text = f"⚠️ Alert rejected by OmniGuard OSINT. Truth Score: 0%. Coordinates: {merged_lat}, {merged_lon}."
             else:
-                reply_text = f"🚨 SOS Verified. Coordinates Locked: {merged_lat}, {merged_lon}. OSINT Truth Verification: {truth_score}. NDRF units are dispatched."
+                reply_text = f"🚨 SOS Verified. Coordinates Locked: {merged_lat}, {merged_lon}. Truth Verification: {truth_score}. NDRF units dispatched."
+
+            # Update OSINT Context to display on Admin Panel
+            osint_context_str = ai_analysis.get('osint_context', '')
+            if is_life_threatening_non_ndrf or not is_disaster:
+                osint_context_str = f"ROUTED TO: {local_contact} | {osint_context_str}"
 
             db_payload = {
-                "raw_message": merged_text,
-                "severity": ai_analysis['severity'],
-                "urgency_score": ai_analysis['urgency_score'],
-                "truth_verification_score": truth_score,
-                "extracted_flags": ai_analysis['extracted_flags'],
-                "estimated_people": ai_analysis['estimated_people'],
-                "location_str": new_location_str,
-                "event_type": ai_analysis.get('event_type', 'Unknown'),
-                "is_natural_disaster": is_disaster,
-                "osint_context": ai_analysis.get('osint_context', ''),
-                "logistics": ai_analysis.get('logistics', {}),
-                "contact_number": sender_number,
-                "status": "PENDING_RESCUE" 
+                "raw_message": merged_text, "severity": severity, "urgency_score": ai_analysis['urgency_score'],
+                "truth_verification_score": truth_score, "extracted_flags": ai_analysis['extracted_flags'],
+                "estimated_people": ai_analysis['estimated_people'], "location_str": new_location_str,
+                "event_type": ai_analysis.get('event_type', 'Unknown'), "is_natural_disaster": is_disaster,
+                "osint_context": osint_context_str, "logistics": ai_analysis.get('logistics', {}),
+                "contact_number": sender_number, "status": "PENDING_RESCUE" 
             }
 
-            # Trigger Email Alert
-            if ai_analysis['severity'] == "CRITICAL" and is_disaster and truth_score != "0%":
+            # --- THE NEW WHATSAPP EMAIL LOGIC ---
+            if severity == "CRITICAL" and truth_score != "0%":
+                alert_msg = f"Intercepted Alert: '{merged_text}'"
+                if is_life_threatening_non_ndrf:
+                    alert_instr = f"CRITICAL NON-NDRF EMERGENCY. Contacted local authority: {local_contact}."
+                else:
+                    alert_instr = f"Deploy NDRF immediately. OSINT Context: {osint_context_str}"
+
                 alert_payload = AlertPayload(
                     recipients=["shivarkarvedant@gmail.com"],
-                    severity="CRITICAL",
-                    location=new_location_str,
-                    message=f"Intercepted Alert: '{merged_text}'\nOSINT Truth Score: {truth_score}",
-                    instructions=f"Deploy NDRF immediately. OSINT Context: {ai_analysis.get('osint_context', '')}"
+                    severity="CRITICAL", location=new_location_str,
+                    message=alert_msg, instructions=alert_instr
                 )
                 background_tasks.add_task(send_smtp_email, alert_payload)
+
         else:
             reply_text = "OmniGuard System Error. Please send a voice note AND share your live location."
             db_payload = None
 
-        # 4. DATABASE UPSERT
         if db_payload:
             if existing.data:
                 supabase.table("distress_signals").update(db_payload).eq("id", existing.data[0]['id']).execute()
@@ -152,7 +134,6 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
                 supabase.table("distress_signals").insert(db_payload).execute()
 
     except Exception as e:
-        print(f"[❌ DB ERROR] {e}")
         reply_text = "OmniGuard System Error. Please retry."
 
     twiml = MessagingResponse()
@@ -161,41 +142,43 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
 
 @router.post("/incoming-sms")
 async def handle_sms_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Tier 2 Zero-Bandwidth Mesh Fallback via Standard SMS"""
     body = await request.body()
     parsed_data = urllib.parse.parse_qs(body.decode("utf-8"))
     incoming_msg = parsed_data.get('Body', [''])[0].strip().upper()
     sender_number = parsed_data.get('From', [''])[0]
 
-    # Regex to find coordinates in "SOS 21.14 79.08" format
     coord_match = re.findall(r"[-+]?\d*\.\d+|\d+", incoming_msg)
     
     if len(coord_match) >= 2:
         lat, lon = coord_match[0], coord_match[1]
         ai_analysis = analyze_distress_signal(incoming_msg, lat, lon)
-        reply = f"OMNIGUARD: SOS Verified at {lat}, {lon}. Help is being routed."
+        is_disaster = ai_analysis.get('is_natural_disaster', True)
+        severity = ai_analysis.get('severity', 'INFO')
+        local_contact = ai_analysis.get('local_authority_contact', 'N/A')
+        
+        is_life_threatening_non_ndrf = (not is_disaster) and (severity == 'CRITICAL')
+
+        if not is_disaster and not is_life_threatening_non_ndrf:
+            reply = f"OMNIGUARD: Non-NDRF Incident. Please contact: {local_contact}"
+        elif is_life_threatening_non_ndrf:
+             reply = f"OMNIGUARD: CRITICAL ALERT. Alert routed to {local_contact}. Help is being dispatched."
+        else:
+            reply = f"OMNIGUARD: SOS Verified at {lat}, {lon}. Help is being routed."
     else:
-        # Tier 2 Fallback: Coordinate Synchronization Simulation
         reply = "⚠️ OMNIGUARD: GPS Missing. Synchronizing with Network Provider for Cell Tower Triangulation. Keep phone ON."
         lat, lon = "0.0", "0.0" 
         ai_analysis = {"severity": "HIGH", "urgency_score": 8, "truth_verification_score": "Cell-ID Pending", "logistics": {}, "extracted_flags": [], "estimated_people": 1}
 
     try:
         supabase.table("distress_signals").insert({
-            "hashed_id": f"SMS-***{sender_number[-4:]}",
-            "raw_message": f"SMS FALLBACK: {incoming_msg}",
-            "severity": ai_analysis.get('severity', 'CRITICAL'),
-            "urgency_score": ai_analysis.get('urgency_score', 8),
+            "hashed_id": f"SMS-***{sender_number[-4:]}", "raw_message": f"SMS FALLBACK: {incoming_msg}",
+            "severity": ai_analysis.get('severity', 'CRITICAL'), "urgency_score": ai_analysis.get('urgency_score', 8),
             "truth_verification_score": ai_analysis.get('truth_verification_score', 'Pending'),
-            "extracted_flags": ai_analysis.get('extracted_flags', []),
-            "estimated_people": ai_analysis.get('estimated_people', 1),
-            "location_str": f"{lat}, {lon}",
-            "status": "PENDING_RESCUE",
+            "location_str": f"{lat}, {lon}", "status": "PENDING_RESCUE",
             "osint_context": ai_analysis.get('osint_context', 'Degraded Network Alert'),
             "event_type": ai_analysis.get('event_type', 'SMS Alert'),
             "is_natural_disaster": ai_analysis.get('is_natural_disaster', True),
-            "logistics": ai_analysis.get('logistics', {}),
-            "contact_number": sender_number
+            "logistics": ai_analysis.get('logistics', {}), "contact_number": sender_number
         }).execute()
     except Exception as e:
         print(f"[DB ERROR SMS] {e}")
@@ -216,6 +199,7 @@ class WebSignalPayload(BaseModel):
     message: str
     latitude: str
     longitude: str
+    email: str = None
     contact: str = "Anonymous-Web"
 
 @router.post("/incoming-web")
@@ -224,22 +208,50 @@ async def handle_web_submission(payload: WebSignalPayload, background_tasks: Bac
     hashed_id = f"Web-***{str(uuid.uuid4())[:4]}"
     location_str = f"{payload.latitude}, {payload.longitude}"
     
+    is_disaster = ai_analysis.get('is_natural_disaster', True)
+    severity = ai_analysis.get('severity', 'INFO')
+    local_contact = ai_analysis.get('local_authority_contact', 'N/A')
+    is_life_threatening_non_ndrf = (not is_disaster) and (severity == 'CRITICAL')
+
+    osint_context_str = ai_analysis.get('osint_context', '')
+    if is_life_threatening_non_ndrf or not is_disaster:
+        osint_context_str = f"ROUTED TO: {local_contact} | {osint_context_str}"
+
+    # --- THE WEB EMAIL ROUTING LOGIC ---
+    if payload.email:
+        if is_life_threatening_non_ndrf:
+            alert_payload = AlertPayload(
+                recipients=["shivarkarvedant@gmail.com", payload.email], severity="CRITICAL",
+                location=location_str, message=f"CRITICAL SOS: '{payload.message}'",
+                instructions=f"This is a severe Non-NDRF emergency. Local authorities ({local_contact}) have been notified."
+            )
+            background_tasks.add_task(send_smtp_email, alert_payload)
+        elif not is_disaster:
+            alert_payload = AlertPayload(
+                recipients=[payload.email], severity="INFO",
+                location=location_str, message=f"Your report ('{payload.message}') has been analyzed.",
+                instructions=f"This is outside NDRF jurisdiction. PLEASE CONTACT: {local_contact}"
+            )
+            background_tasks.add_task(send_smtp_email, alert_payload)
+        elif severity == "CRITICAL" and ai_analysis['truth_verification_score'] != "0%":
+            alert_payload = AlertPayload(
+                recipients=["shivarkarvedant@gmail.com", payload.email], severity="CRITICAL",
+                location=location_str, message=f"SOS Received: '{payload.message}'",
+                instructions="NDRF has been dispatched to your coordinates. Stay safe."
+            )
+            background_tasks.add_task(send_smtp_email, alert_payload)
+
     try:
         supabase.table("distress_signals").insert({
-            "hashed_id": hashed_id,
-            "raw_message": payload.message,
-            "severity": ai_analysis['severity'],
-            "urgency_score": ai_analysis['urgency_score'],
+            "hashed_id": hashed_id, "raw_message": payload.message,
+            "severity": severity, "urgency_score": ai_analysis['urgency_score'],
             "truth_verification_score": ai_analysis['truth_verification_score'],
-            "extracted_flags": ai_analysis['extracted_flags'],
-            "estimated_people": ai_analysis['estimated_people'],
-            "location_str": location_str,
-            "status": "PENDING_RESCUE",
-            "osint_context": ai_analysis.get('osint_context', ''),
-            "event_type": ai_analysis.get('event_type', 'Unknown'),
-            "is_natural_disaster": ai_analysis.get('is_natural_disaster', True),
-            "logistics": ai_analysis.get('logistics', {})
+            "extracted_flags": ai_analysis['extracted_flags'], "estimated_people": ai_analysis['estimated_people'],
+            "location_str": location_str, "status": "PENDING_RESCUE",
+            "osint_context": osint_context_str, "event_type": ai_analysis.get('event_type', 'Unknown'),
+            "is_natural_disaster": is_disaster, "logistics": ai_analysis.get('logistics', {})
         }).execute()
     except Exception as e:
         print(f"[DB ERROR] {e}")
-    return {"status": "success"}
+        
+    return {"status": "success", "is_disaster": is_disaster, "is_critical": is_life_threatening_non_ndrf, "contact_info": local_contact}

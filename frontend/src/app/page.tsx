@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from 'react';
@@ -10,9 +11,10 @@ const LiveMap = dynamic(() => import('@/components/LiveMap'), {
 
 export default function PublicPortal() {
   const [locationStatus, setLocationStatus] = useState("Click to capture GPS");
-  const [reportText, setReportText] = useState(""); // <-- New State for the textbox
+  const [reportText, setReportText] = useState(""); 
+  const [userEmail, setUserEmail] = useState(""); // NEW EMAIL STATE
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [submissionResult, setSubmissionResult] = useState<{success: boolean, message: string} | null>(null);
 
   const emergencyNumber = "917588387675";
   const whatsappTemplate = encodeURI(
@@ -45,11 +47,11 @@ export default function PublicPortal() {
     const lat = latMatch ? latMatch[1] : "Unknown";
     const lng = lngMatch ? lngMatch[1] : "Unknown";
 
-    // Pass the actual typed text to the backend
     const payload = {
       message: reportText || "Silent report: Immediate assistance required.",
       latitude: lat,
       longitude: lng,
+      email: userEmail, // PASSING EMAIL TO BACKEND
       contact: "Anonymous"
     };
 
@@ -59,10 +61,25 @@ export default function PublicPortal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (response.ok) setSubmitted(true);
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        if (!data.is_disaster) {
+          setSubmissionResult({
+            success: true, 
+            message: `Report routed to local authorities. Please contact: ${data.contact_info}. An email has been sent to you.`
+          });
+        } else {
+          setSubmissionResult({
+            success: true, 
+            message: "Report Received. NDRF Rescue assigned. Confirmation email sent."
+          });
+        }
+      }
     } catch (error) {
       console.error("Transmission failed", error);
-      setSubmitted(true); 
+      setSubmissionResult({success: false, message: "Network failure. Please use WhatsApp."});
     } finally {
       setIsSubmitting(false);
     }
@@ -102,9 +119,9 @@ export default function PublicPortal() {
           <h2 className="font-bold text-gray-800 text-lg mb-2">Silent Web Report</h2>
           <p className="text-sm text-gray-600 mb-4">If you cannot speak, send a discrete SOS.</p>
           
-          {submitted ? (
-            <div className="bg-green-50 border border-green-200 text-green-700 p-4 rounded-xl text-center font-bold">
-              ✅ Report Received. NDRF Rescue assigned.
+          {submissionResult ? (
+            <div className={`p-4 rounded-xl text-center font-bold border ${submissionResult.message.includes('routed') ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-green-50 border-green-200 text-green-700'}`}>
+              {submissionResult.message}
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -113,12 +130,26 @@ export default function PublicPortal() {
                 <textarea 
                   value={reportText}
                   onChange={(e) => setReportText(e.target.value)}
-                  placeholder="E.g., 3 people trapped on the roof, water rising fast..."
+                  placeholder="E.g., 3 people trapped on the roof, water rising fast... OR Power out for 2 days."
                   className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
                   rows={3}
                   required
                 />
               </div>
+              
+              {/* NEW EMAIL FIELD */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Contact Email (For Updates)</label>
+                <input 
+                  type="email"
+                  value={userEmail}
+                  onChange={(e) => setUserEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  required
+                />
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Your Exact Location</label>
                 <button 
@@ -150,10 +181,6 @@ export default function PublicPortal() {
           </div>
           <div className="p-0 border-b border-gray-200 bg-gray-100">
             <LiveMap signals={[]} isPublicView={true} />
-          </div>
-          <div className="bg-gray-50 p-3 text-xs flex justify-around">
-            <span className="flex items-center gap-1 font-semibold text-green-700"><div className="w-3 h-3 bg-green-500 rounded-full opacity-50"></div> Verified Safe Zone</span>
-            <span className="flex items-center gap-1 font-semibold text-red-700"><div className="w-3 h-3 bg-red-500 rounded-full"></div> Active Hazard</span>
           </div>
         </div>
 
