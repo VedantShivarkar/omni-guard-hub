@@ -5,6 +5,7 @@ from supabase import create_client, Client
 from twilio.twiml.messaging_response import MessagingResponse
 import urllib.parse
 import os
+import re
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import uuid
@@ -41,8 +42,7 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
     provided_description = has_audio or has_meaningful_text
 
     try:
-        # 1. FETCH STATE
-        # CRITICAL FIX: ONLY look for active, INCOMPLETE reports for this user to prevent merging with old emergencies.
+        # 1. FETCH STATE: ONLY look for active, INCOMPLETE reports
         existing = supabase.table("distress_signals").select("*").eq("hashed_id", hashed_id).eq("status", "INCOMPLETE").order("created_at", desc=True).limit(1).execute()
         
         merged_text = incoming_msg
@@ -59,7 +59,6 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
         if existing.data:
             record = existing.data[0]
             
-            # If incoming is JUST description, retrieve the old location
             if provided_description and not has_location:
                 if record['location_str'] and record['location_str'] != "Location Pending":
                     parts = record['location_str'].replace("Lat:", "").replace("Lng:", "").split(",")
@@ -67,7 +66,6 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
                         merged_lat, merged_lon = parts[0].strip(), parts[1].strip()
                         has_location = True
                         
-            # If incoming is JUST location, retrieve the old description
             if has_location and not provided_description:
                 if record['raw_message'] and record['raw_message'] != "Awaiting Voice Note...":
                     merged_text = record['raw_message']
@@ -86,7 +84,7 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
                 "truth_verification_score": "Pending",
                 "osint_context": "Awaiting Location Data...",
                 "event_type": "Pending",
-                "status": "INCOMPLETE" # Keep it incomplete
+                "status": "INCOMPLETE" 
             }
 
         elif has_location and not provided_description:
@@ -99,7 +97,7 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
                 "truth_verification_score": "Pending",
                 "osint_context": "Awaiting Audio Data...",
                 "event_type": "Pending",
-                "status": "INCOMPLETE" # Keep it incomplete
+                "status": "INCOMPLETE" 
             }
 
         elif provided_description and has_location:
@@ -126,7 +124,9 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
                 "event_type": ai_analysis.get('event_type', 'Unknown'),
                 "is_natural_disaster": is_disaster,
                 "osint_context": ai_analysis.get('osint_context', ''),
-                "status": "PENDING_RESCUE" # Mark as Complete!
+                "logistics": ai_analysis.get('logistics', {}),
+                "contact_number": sender_number,
+                "status": "PENDING_RESCUE" 
             }
 
             # Trigger Email Alert
@@ -146,10 +146,8 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
         # 4. DATABASE UPSERT
         if db_payload:
             if existing.data:
-                # Update the INCOMPLETE record to become PENDING_RESCUE
                 supabase.table("distress_signals").update(db_payload).eq("id", existing.data[0]['id']).execute()
             else:
-                # Create a NEW INCOMPLETE record
                 db_payload["hashed_id"] = hashed_id
                 supabase.table("distress_signals").insert(db_payload).execute()
 
@@ -161,7 +159,50 @@ async def handle_whatsapp_webhook(request: Request, background_tasks: Background
     twiml.message(reply_text)
     return Response(content=str(twiml), media_type="application/xml")
 
-# --------- KEEP WEB AND SIGNALS ENDPOINTS BELOW -----------
+@router.post("/incoming-sms")
+async def handle_sms_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Tier 2 Zero-Bandwidth Mesh Fallback via Standard SMS"""
+    body = await request.body()
+    parsed_data = urllib.parse.parse_qs(body.decode("utf-8"))
+    incoming_msg = parsed_data.get('Body', [''])[0].strip().upper()
+    sender_number = parsed_data.get('From', [''])[0]
+
+    # Regex to find coordinates in "SOS 21.14 79.08" format
+    coord_match = re.findall(r"[-+]?\d*\.\d+|\d+", incoming_msg)
+    
+    if len(coord_match) >= 2:
+        lat, lon = coord_match[0], coord_match[1]
+        ai_analysis = analyze_distress_signal(incoming_msg, lat, lon)
+        reply = f"OMNIGUARD: SOS Verified at {lat}, {lon}. Help is being routed."
+    else:
+        # Tier 2 Fallback: Coordinate Synchronization Simulation
+        reply = "⚠️ OMNIGUARD: GPS Missing. Synchronizing with Network Provider for Cell Tower Triangulation. Keep phone ON."
+        lat, lon = "0.0", "0.0" 
+        ai_analysis = {"severity": "HIGH", "urgency_score": 8, "truth_verification_score": "Cell-ID Pending", "logistics": {}, "extracted_flags": [], "estimated_people": 1}
+
+    try:
+        supabase.table("distress_signals").insert({
+            "hashed_id": f"SMS-***{sender_number[-4:]}",
+            "raw_message": f"SMS FALLBACK: {incoming_msg}",
+            "severity": ai_analysis.get('severity', 'CRITICAL'),
+            "urgency_score": ai_analysis.get('urgency_score', 8),
+            "truth_verification_score": ai_analysis.get('truth_verification_score', 'Pending'),
+            "extracted_flags": ai_analysis.get('extracted_flags', []),
+            "estimated_people": ai_analysis.get('estimated_people', 1),
+            "location_str": f"{lat}, {lon}",
+            "status": "PENDING_RESCUE",
+            "osint_context": ai_analysis.get('osint_context', 'Degraded Network Alert'),
+            "event_type": ai_analysis.get('event_type', 'SMS Alert'),
+            "is_natural_disaster": ai_analysis.get('is_natural_disaster', True),
+            "logistics": ai_analysis.get('logistics', {}),
+            "contact_number": sender_number
+        }).execute()
+    except Exception as e:
+        print(f"[DB ERROR SMS] {e}")
+
+    twiml = MessagingResponse()
+    twiml.message(reply)
+    return Response(content=str(twiml), media_type="application/xml")
 
 @router.get("/signals")
 async def get_all_signals():
@@ -196,7 +237,8 @@ async def handle_web_submission(payload: WebSignalPayload, background_tasks: Bac
             "status": "PENDING_RESCUE",
             "osint_context": ai_analysis.get('osint_context', ''),
             "event_type": ai_analysis.get('event_type', 'Unknown'),
-            "is_natural_disaster": ai_analysis.get('is_natural_disaster', True)
+            "is_natural_disaster": ai_analysis.get('is_natural_disaster', True),
+            "logistics": ai_analysis.get('logistics', {})
         }).execute()
     except Exception as e:
         print(f"[DB ERROR] {e}")

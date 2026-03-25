@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { motion } from 'framer-motion';
 import { Target, Crosshair, Radio, Globe, AlertTriangle } from 'lucide-react';
+import SignalTacticalCard from '@/components/SignalTacticalCard';
 
 const LiveMap = dynamic(() => import('@/components/LiveMap'), { 
   ssr: false, 
@@ -15,10 +16,13 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [macroData, setMacroData] = useState<any>(null);
   const [isScanning, setIsScanning] = useState(false);
-  const [scanRegion, setScanRegion] = useState("AWAITING_COORDINATES");
-  const [scanLat, setScanLat] = useState("");
-  const [scanLng, setScanLng] = useState("");
+  const [scanRegion, setScanRegion] = useState("INDIA"); 
+  const [scanLat, setScanLat] = useState("21.14");
+  const [scanLng, setScanLng] = useState("79.08");
   const [lastScannedLocation, setLastScannedLocation] = useState<{lat: number, lng: number} | null>(null);
+
+  // NEW: Drone Route State
+  const [activeRoute, setActiveRoute] = useState<[number, number][] | null>(null);
 
   const fetchSignals = async () => {
     try {
@@ -65,7 +69,25 @@ export default function AdminDashboard() {
       setIsScanning(false);
     }
   };
-  
+
+  const triggerEvacuationBlast = async () => {
+    if (!macroData) { alert("Run OSINT Sweep First to lock target region."); return; }
+    const confirm = window.confirm("🚨 WARNING: Mass evacuation blast will be sent to all users in this sector. Proceed?");
+    if(!confirm) return;
+
+    await fetch('http://localhost:8000/api/v1/admin/broadcast-evac', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lat: lastScannedLocation?.lat || 21.14, 
+        lng: lastScannedLocation?.lng || 79.08, 
+        radius: 50,
+        message: "OMNIGUARD ALERT: Flash flood imminent. Evacuate to higher ground immediately."
+      })
+    });
+    alert("✅ Evacuation Blast Transmitted securely.");
+  };
+
   const handleDispatch = async (signal: any) => {
     const isConfirmed = confirm(`Dispatch rescue and send email alert for ${signal.hashed_id}?`);
     if (!isConfirmed) return;
@@ -113,19 +135,27 @@ export default function AdminDashboard() {
           <div className="flex items-center gap-2 bg-black/40 p-2 border border-[#00ffd0]/20 rounded">
             <div className="flex flex-col">
               <span className="text-[9px] text-gray-500 ml-1">TARGET_AREA</span>
-              <input readOnly value={scanRegion} className="bg-transparent text-xs px-2 py-1 outline-none w-32 font-bold" />
+              <input value={scanRegion} onChange={(e) => setScanRegion(e.target.value)} className="bg-transparent text-xs px-2 py-1 outline-none w-32 font-bold uppercase" />
             </div>
-            <button 
-              onClick={runMacroScan} 
-              disabled={isScanning || !scanLat}
-              className="bg-[#00ffd0] hover:bg-[#00ffd0]/80 disabled:bg-gray-800 text-black px-4 py-2 text-xs font-black uppercase tracking-tighter flex items-center gap-2 transition-all"
-            >
-              <Target className="w-4 h-4" /> {isScanning ? "SCANNING..." : "EXECUTE SWEEP"}
-            </button>
+            <div className="flex flex-col gap-2">
+              <button 
+                onClick={runMacroScan} 
+                disabled={isScanning || !scanLat}
+                className="bg-[#00ffd0] hover:bg-[#00ffd0]/80 disabled:bg-gray-800 text-black px-4 py-2 text-xs font-black uppercase tracking-tighter flex items-center justify-center gap-2 transition-all"
+              >
+                <Target className="w-4 h-4" /> {isScanning ? "SCANNING..." : "EXECUTE SWEEP"}
+              </button>
+              <button 
+                onClick={triggerEvacuationBlast}
+                className="border border-red-500 text-red-500 hover:bg-red-500 hover:text-white px-4 py-2 rounded text-[10px] font-bold transition-all w-full tracking-widest"
+              >
+                📢 EVACUATION BLAST
+              </button>
+            </div>
           </div>
         </div>
 
-       {/* ACTIVE LIVE INCIDENTS CARDS */}
+        {/* ACTIVE LIVE INCIDENTS CARDS */}
         {macroData?.intelligence?.active_incidents && macroData.intelligence.active_incidents.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[#00ffd0]/20 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
             {macroData.intelligence.active_incidents.map((incident: any, idx: number) => (
@@ -170,7 +200,7 @@ export default function AdminDashboard() {
               </div>
             ))}
           </div>
-        )} 
+        )}
       </motion.div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -186,11 +216,12 @@ export default function AdminDashboard() {
             <LiveMap 
               signals={signals} 
               onMapClick={handleMapClick}
+              activeRoute={activeRoute}
               macroScan={macroData && lastScannedLocation ? {
                 lat: lastScannedLocation.lat,
                 lng: lastScannedLocation.lng,
                 threatLevel: macroData.intelligence?.threat_level || 'UNKNOWN',
-                incidents: macroData.intelligence?.active_incidents || [] // <--- WE ADDED THIS
+                incidents: macroData.intelligence?.active_incidents || [] 
               } : null}
             />
           </div>
@@ -204,7 +235,7 @@ export default function AdminDashboard() {
             </h3>
             <button onClick={fetchSignals} className="text-[10px] text-gray-500 hover:text-[#00ffd0] underline">SYNC_NOW</button>
           </div>
-          <div className="glass-panel flex-1 max-h-[500px] overflow-y-auto custom-scrollbar border border-[#00ffd0]/20 shadow-2xl">
+          <div className="glass-panel flex-1 max-h-[600px] overflow-y-auto custom-scrollbar border border-[#00ffd0]/20 shadow-2xl">
             {signals.map((signal, idx) => (
               <motion.div 
                 key={signal.id}
@@ -234,9 +265,9 @@ export default function AdminDashboard() {
                   </button>
                 </div>
 
-                {/* HIDDEN FORENSIC DATA (Reveals on Hover) */}
+                {/* HIDDEN FORENSIC DATA & DRONE UI (Reveals on Hover) */}
                 <div className="hidden group-hover:block mt-3 p-3 bg-black/60 rounded border border-[#00ffd0]/20 text-[10px] text-gray-300 transition-all shadow-inner">
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-2 mb-2">
                     <p><strong className="text-[#00ffd0]">Coordinates:</strong> {signal.location_str || "Unknown"}</p>
                     <p><strong className="text-[#00ffd0]">Est. Trapped:</strong> {signal.estimated_people || 0} Person(s)</p>
                     <p><strong className="text-[#00ffd0]">Event Type:</strong> {signal.event_type || 'Unknown'}</p>
@@ -244,6 +275,13 @@ export default function AdminDashboard() {
                     <p className="col-span-2 text-[9px]"><strong className="text-[#00ffd0]">Extracted Flags:</strong> {signal.extracted_flags?.join(', ') || 'None'}</p>
                     <p className="col-span-2 text-[9px] border-t border-gray-800 pt-1 mt-1"><strong className="text-[#00ffd0]">Full OSINT Log:</strong> {signal.osint_context || "No context logged."}</p>
                   </div>
+                  
+                  {/* TACTICAL DRONE COMPONENT */}
+                  <SignalTacticalCard 
+                    signal={signal} 
+                    onDrawRoute={setActiveRoute}
+                  />
+
                 </div>
               </motion.div>
             ))}

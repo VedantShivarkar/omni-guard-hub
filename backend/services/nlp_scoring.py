@@ -76,9 +76,6 @@ def transcribe_audio_with_groq(media_url: str) -> str:
         if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
 
 def analyze_distress_signal(text: str, lat: str = 'None', lon: str = 'None', media_url: str = None) -> dict:
-    """
-    STRICT FORENSIC CLASSIFIER: Catches fake floods using live weather data.
-    """
     actual_text = transcribe_audio_with_groq(media_url) if media_url else text
     if not actual_text: actual_text = "No intelligence provided."
 
@@ -88,33 +85,41 @@ def analyze_distress_signal(text: str, lat: str = 'None', lon: str = 'None', med
     print("[🧠] Analyzing Data using Groq Llama-3.3-70B...")
     
     system_prompt = f"""
-    You are OmniGuard, a strict forensic AI for the NDRF.
-    Analyze this Distress Signal against the Live Weather and Social Data.
+You are OmniGuard, a strict forensic AI Logistics Officer for the NDRF.
+Analyze this Distress Signal against the Live Weather and Social Data.
 
-    Distress Signal: "{actual_text}"
-    Live Weather API: {weather_data}
-    Social Media API: {social_data}
+Distress Signal: "{actual_text}"
+Live Weather API: {weather_data}
+Social Media API: {social_data}
 
-    CRITICAL RULE 1: FORENSIC WEATHER VERIFICATION
-    If the user claims a flood, heavy rain, or storm, BUT the Live Weather API shows 'clear', 'haze', 'clouds', or low wind, THIS IS A FALSE ALARM.
-    If it is a false alarm: set "truth_verification_score" to "0%", "severity" to "INFO", "urgency_score" to 0, and explicitly write "FALSE CLAIM DETECTED: Weather API confirms clear/mild conditions, contradicting the emergency claim." in "osint_context".
+CRITICAL RULE 1: FORENSIC WEATHER VERIFICATION
+If the user claims a flood, heavy rain, or storm, BUT the Live Weather API shows 'clear', 'haze', 'clouds', or low wind, THIS IS A FALSE ALARM.
+If it is a false alarm: set "truth_verification_score" to "0%", "severity" to "INFO", "urgency_score" to 0, and explicitly write "FALSE CLAIM DETECTED: Weather API confirms clear/mild conditions, contradicting the emergency claim." in "osint_context".
 
-    CRITICAL RULE 2: NON-NDRF INCIDENTS
-    If the event is gunfire, robbery, or gangwar, set "is_natural_disaster" to false, "severity" to "INFO", "truth_verification_score" to "0%", and state "Police incident, routing away from NDRF" in osint_context.
+CRITICAL RULE 2: NON-NDRF INCIDENTS
+If the event is gunfire, robbery, or gangwar, set "is_natural_disaster" to false, "severity" to "INFO", "truth_verification_score" to "0%", and state "Police incident, routing away from NDRF" in osint_context.
 
-    Output ONLY valid JSON:
-    {{
-        "is_natural_disaster": <boolean>,
-        "event_type": "<e.g., Flood, Fake Claim, Gunfire>",
-        "severity": "CRITICAL", "WARNING", or "INFO",
-        "urgency_score": <int 0-10>,
-        "truth_verification_score": "<percentage string, e.g. '0%' or '95%'>",
-        "extracted_flags": ["<string>"],
-        "estimated_people": <int>,
-        "osint_context": "<Strict proof of weather match or mismatch>",
-        "transcribed_text": "{actual_text}"
+LOGISTICS OFFICER INSTRUCTION:
+Generate operational deployment guidance based on severity, weather, terrain, and estimated_people.
+
+Output ONLY valid JSON:
+{{
+    "is_natural_disaster": <boolean>,
+    "event_type": "<e.g., Flood, Fake Claim, Gunfire>",
+    "severity": "CRITICAL", "WARNING", or "INFO",
+    "urgency_score": <int 0-10>,
+    "truth_verification_score": "<percentage string, e.g. '0%' or '95%'>",
+    "extracted_flags": ["<string>"],
+    "estimated_people": <int>,
+    "osint_context": "<Strict proof of weather match or mismatch>",
+    "transcribed_text": "{actual_text}",
+    "logistics": {{
+        "equipment": ["<list of deployment equipment>"],
+        "personnel": "<team composition>",
+        "burn_rate_warning": "<time critical survival window>"
     }}
-    """
+}}
+"""
     
     try:
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -143,7 +148,8 @@ def analyze_distress_signal(text: str, lat: str = 'None', lon: str = 'None', med
             "is_natural_disaster": True, "event_type": "Unknown",
             "severity": "INFO", "urgency_score": 0, "truth_verification_score": "0%",
             "extracted_flags": ["error"], "estimated_people": 0, 
-            "osint_context": "API Error. Manual verification required.", "transcribed_text": actual_text
+            "osint_context": "API Error. Manual verification required.", "transcribed_text": actual_text,
+            "logistics": {"equipment": ["Standard Requisition"], "personnel": "Standby", "burn_rate_warning": "N/A"}
         }
 
 def fetch_global_news(query: str) -> str:
